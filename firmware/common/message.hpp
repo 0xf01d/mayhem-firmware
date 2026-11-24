@@ -184,6 +184,8 @@ class Message {
         SubGhzChatPacket = 125,
         DPMRFrame = 126,
         DPMRTchData = 127,
+        DPMRTxConfigure = 128,
+        DPMRVoiceStatus = 129,
         MAX
     };
 
@@ -1494,6 +1496,7 @@ class RequestSignalMessage : public Message {
         RSSIBeepRequest = 3,
         BeepStopRequest = 4,
         Squelched = 5,
+        DPMRTxRelease = 6, /* pmr446: PTT released, finish the dPMR call */
     };
 
     constexpr RequestSignalMessage(
@@ -2241,7 +2244,9 @@ struct DPMRFrameMessage : public Message {
     bool crc_ok{false};
 };
 
-/* dPMR446 (pmr446 app): descrambled TCH payload of one frame (9.1). */
+/* dPMR446 (pmr446 app): TCH payload of one 80 ms frame. Voice superframes
+ * carry the raw 288 vocoder bits (9.1); type 1/2 data superframes the
+ * decoded payload after the combined descramble (9.2/9.3). */
 struct DPMRTchDataMessage : public Message {
     static constexpr size_t MAX_LENGTH = 36;  /* 288 bits */
 
@@ -2250,7 +2255,57 @@ struct DPMRTchDataMessage : public Message {
 
     uint8_t frame_number{0};
     uint8_t length{MAX_LENGTH};
+    uint8_t decoded{0}; /* 0: raw voice bits, 1: type 1, 2: type 2 */
     uint8_t data[MAX_LENGTH]{};
+};
+
+/* dPMR446 (pmr446 app): transmit configuration. The processor assembles
+ * preamble/headers/superframes/end itself; for data modes the payload
+ * bytes travel through shared_memory.bb_data (MSB first). */
+class DPMRTxConfigureMessage : public Message {
+   public:
+    enum Mode : uint8_t {
+        VOICE = 0,
+        DATA1 = 1,
+        DATA2 = 2,
+        SIGNALLING = 3, /* header (+ end) only: call set-up, ID, disconnect */
+    };
+
+    constexpr DPMRTxConfigureMessage()
+        : Message{ID::DPMRTxConfigure} {}
+
+    uint8_t mode{VOICE};
+    uint8_t header_type{0};  /* HT, 5.11 */
+    uint8_t ci_type{0};      /* CI type, 3 bits, 5.10 */
+    uint8_t ci_info{0};      /* CI information, 8 bits */
+    uint8_t comm_mode{0};    /* M for voice frames, 5.7 */
+    uint8_t version{0};      /* V, 5.16 */
+    uint8_t comm_format{0};  /* F, 5.8 */
+    uint8_t end_type{0};     /* ET, 5.12 */
+    uint8_t arq{0};          /* 5.13 */
+    uint8_t tx_wait{0};      /* 5.14 */
+    uint8_t status{0};       /* STAT, 5.15 */
+    uint8_t repeat{1};       /* header+end pairs for SIGNALLING */
+    uint8_t mic_shift{4};    /* voice: mic sample right shift into the encoder */
+    uint16_t mic_gain_q8{256}; /* voice: gain after the shift, Q8 */
+    uint16_t cc12{0};        /* 12-bit channel code, table 6.1 */
+    uint16_t payload_len{0}; /* data modes: bytes in bb_data */
+    uint32_t called_id{0};   /* 24-bit */
+    uint32_t own_id{0};      /* 24-bit */
+    uint32_t sld{0};         /* 18-bit slow data field for data frames */
+};
+
+/* dPMR446 (pmr446 app): voice receiver status, one per vocoder frame
+ * (12.5/s). flags are the xombe per-frame flags; vocoded distinguishes
+ * speech from silence/concealment for the UI indicator. */
+struct DPMRVoiceStatusMessage : public Message {
+    constexpr DPMRVoiceStatusMessage()
+        : Message{ID::DPMRVoiceStatus} {}
+
+    uint8_t flags{0};        /* xombe XOMBE_FLAG_* word */
+    bool concealing{false};  /* bad frame repeated */
+    bool vocoded{false};     /* speech decoded (vs silence) */
+    uint8_t frame_number{0}; /* CCH FN of the frame */
 };
 /* Spectrum Analyzer ******************************************************/
 
