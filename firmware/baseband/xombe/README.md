@@ -47,3 +47,18 @@ required for over-the-air interop), `src/tables` (minus D-STAR/cquant tables),
 Upstream is not modified. Report of the fit/measure work (image budgets,
 `--print-memory-usage` output, objdump evidence of the DSP instructions) is in
 the PMR446 TX commit messages and the phase report.
+
+## Patents
+
+The MIT license covers the code. It says nothing about AMBE+2 itself, and AMBE+2
+(DVSI) is patented technology: shipping a vocoder that implements it can require
+a licence from the patent holder regardless of the source licence, and
+implementations written from the specification rather than from licensed
+reference code have been the subject of enforcement before.
+
+This is worth knowing before anyone distributes a build with the dPMR446 voice
+images enabled: the layer-2 dPMR446 app and its signalling receiver do not
+involve AMBE+2 and are unaffected, but `baseband_dpmr446_voice`,
+`baseband_dpmr446_tx` and the combined image do. Nothing in this repository
+grants patent rights, and the author of this vendoring is not in a position to
+grant any.
