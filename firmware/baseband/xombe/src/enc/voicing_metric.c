@@ -1,4 +1,5 @@
 #include <string.h>
+#include "../dsp/fmath.h"
 #include "kernels.h"
 
 #define METRIC_TOP XOMBE_HZ(3950.0f) /* metric fits harmonics below this */
@@ -48,7 +49,7 @@ void xombe__voicing_metric(xombe_enc *e, const xombe_spec *S, float fhat, float 
 
 float xombe__voicing_map(float sm)
 {
-    float soft = sm > 0.0f ? SOFT_OFFSET - 0.5f * log2f(sm) : 1.0f;
+    float soft = sm > 0.0f ? SOFT_OFFSET - 0.5f * xombe__log2f(sm) : 1.0f;
     return soft < 0.0f ? 0.0f : soft > 1.0f ? 1.0f : soft;
 }
 

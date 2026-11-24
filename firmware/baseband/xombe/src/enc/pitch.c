@@ -1,5 +1,6 @@
 #include <math.h>
 #include <string.h>
+#include "../dsp/fmath.h"
 #include "kernels.h"
 
 /* period grid from 21 samples in half-sample steps, index i is period (GRID_BASE + i)/2 */
@@ -156,7 +157,7 @@ float xombe__pitch_track(xombe_enc *e, int cur, int next1, int next2)
 
 int xombe__pitch_window_len(float period)
 {
-    int n = 2 * (int)floorf((2.5f * period - 1.0f) / 2.0f + 0.5f) + 1;
+    int n = 2 * (int)xombe__floorf((2.5f * period - 1.0f) / 2.0f + 0.5f) + 1;
     if (n < XOMBE_BASE_WINDOW)
         n = XOMBE_BASE_WINDOW;
     if (n > XOMBE_MAX_WINDOW)
@@ -174,7 +175,7 @@ float xombe__pitch_refine(xombe_enc *e, const xombe_spec *S, float period)
         float p = period + (float)d / REFINE_STEPS, r;
         if (p < REFINE_MIN_PERIOD)
             continue;
-        r = xombe__kern_line_fit(e, &sp, p, (int)ceilf(0.5f * XOMBE_FFT / p), kmax, band_r, band_e);
+        r = xombe__kern_line_fit(e, &sp, p, (int)xombe__ceilf(0.5f * XOMBE_FFT / p), kmax, band_r, band_e);
         if (!found || r < best) {
             found = 1;
             best = r;

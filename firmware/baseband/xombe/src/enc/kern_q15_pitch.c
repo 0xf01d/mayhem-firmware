@@ -45,7 +45,11 @@ static int mag_bits(uint32_t m)
 
 void xombe__kern_pitch_acf(xombe_enc *e, const float *centre, int slot)
 {
+    #if XOMBE_KERNELS_Q15
+    int16_t x[PE_X], *rq = e->pacf[slot];
+#else
     int16_t x[PE_X], *rq = e->pacf[slot].q;
+#endif
     int32_t sv[PE_N];
     uint32_t up[2 * PE_P]; /* up[j] = (u[2j], u[2j + 1]), up[PE_P + j] = (u[2j + 1], u[2j + 2]) */
     float m = 0.0f, gx, cs, cu, b = 0.0f;
@@ -134,7 +138,11 @@ void xombe__kern_pitch_acf(xombe_enc *e, const float *centre, int slot)
 /* reads lags in pairs (r[i], r[i + 1]) at any i */
 float xombe__kern_error_at(const xombe_enc *e, int slot, float P)
 {
+#if XOMBE_KERNELS_Q15
+    const int16_t *rq = e->pacf[slot];
+#else
     const int16_t *rq = e->pacf[slot].q;
+#endif
     float e0 = e->pe0[slot], val;
     /* K = floor((XOMBE_PITCH_WIN - 1)/P) for P = p4/4 */
     int k, p4 = (int)(4.0f * P + 0.5f), K = 4 * (XOMBE_PITCH_WIN - 1) / p4, t4 = p4;

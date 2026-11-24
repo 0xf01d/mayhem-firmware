@@ -1,5 +1,6 @@
 #include <math.h>
 #include <string.h>
+#include "../dsp/fmath.h"
 #include "frontend.h"
 #include "../tables/dsp_tables.h"
 #if XOMBE_HAVE_DSTAR
@@ -41,7 +42,7 @@ static void choose_pitch_and_voicing(xombe_enc *e, xombe_fe_frame *a, xombe_a2_f
     xombe__fe_voice(e, a);
     b[0] = nearest_pitch_index(a->fstar);
     f0 = xombe__w0[b[0]];
-    fh1 = e->pi.cls == XOMBE_CLASS_VOICE ? sqrtf(e->pi.f0 * f0) : f0;
+    fh1 = e->pi.cls == XOMBE_CLASS_VOICE ? xombe__sqrtf(e->pi.f0 * f0) : f0;
     xombe__voicing_soft(e, &a->S1, fh1, e->voicing_scale, f->soft1, w1);
     xombe__voicing_soft_sp(e, xombe__fe_s2_prepared(e, a), f0, e->voicing_scale, f->soft2, w2);
     if (!a->speech1)

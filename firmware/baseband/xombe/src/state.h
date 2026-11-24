@@ -115,7 +115,10 @@ struct xombe_dec {
 
 #if XOMBE_HAVE_ENCODER
 #define XOMBE_FRAME 160
-#define XOMBE_ENC_BUF 1024 /* input history in samples, newest last */
+#define XOMBE_ENC_BUF 768 /* input history in samples, newest last. The analysis window end is
+                             FRAME_BASE + HALF2_CENTRE + MAX_WINDOW/2 and frontend.c static-asserts it stays
+                             inside this, as it does for the pitch pass; 768 is 256 fewer than upstream
+                             and saves 1024 B of encoder state */
 /* frames of look-ahead beyond XOMBE_ENC_DELAY for the D-STAR tone rules (dstar/dstar_enc.h), with the D-STAR
    output on the encoder codes a frame this many frames older */
 #if XOMBE_HAVE_DSTAR
@@ -149,7 +152,9 @@ struct xombe_dec {
 #define XOMBE_PITCH_HALF 150
 #define XOMBE_PITCH_WIN (2 * XOMBE_PITCH_HALF + 1)
 #define XOMBE_PITCH_GRID 205
-#define XOMBE_VAD_HIST 300 /* half-frames of band levels for the stationarity rule */
+#define XOMBE_VAD_HIST 64 /* half-frames of band levels for the stationarity rule: 1.28 s at the 20 ms
+                            half-frame, still several stationarity windows, and 3.8 KiB smaller than the
+                            upstream 300 (3 s) which the TX image cannot spare */
 #define XOMBE_NS_BINS 40
 
 #include "enc/kern_state.h"
@@ -178,10 +183,16 @@ struct xombe_enc {
     xombe_hpf hpf;
     float perr[XOMBE_ENC_DELAY][XOMBE_PITCH_GRID];
     /* pitch autocorrelation per slot, float lags or int16 lags (padded by one) scaled by pacf_scale */
+#if XOMBE_KERNELS_Q15
+    /* the q15 pitch kernel stores int16 lags (padded by one) and never touches
+     * the float arm, whose 602 B per slot would be reserved for nothing */
+    int16_t pacf[XOMBE_ENC_DELAY][XOMBE_PITCH_WIN + 1];
+#else
     union {
         float f[XOMBE_PITCH_WIN];
         int16_t q[XOMBE_PITCH_WIN + 1];
     } pacf[XOMBE_ENC_DELAY];
+#endif
     float pacf_scale[XOMBE_ENC_DELAY];
     float pe0[XOMBE_ENC_DELAY];
     int psilent[XOMBE_ENC_DELAY];
@@ -191,7 +202,11 @@ struct xombe_enc {
     float win[XOMBE_MAX_WINDOW];
     int win_len;
     float win_sum2;
+#if !XOMBE_KERNELS_Q15
+    /* the q15 pitch kernel builds its own transform table, so this one is only
+     * used (and only reserved) by the float path */
     float wtab[XOMBE_WTAB_LEN];
+#endif
     float vad_nl[8], vad_smooth[8];
     int16_t vad_hist[XOMBE_VAD_HIST][8];  /* log2 of the smoothed band powers, Q10 (vad.c) */
     int16_t vad_hist_fl[XOMBE_VAD_HIST];  /* log2 of each half's floor, Q10 */
@@ -204,7 +219,7 @@ struct xombe_enc {
     xombe_ns_mem ns_mem;                     /* AMBE+2 back end's gain smoothing */
     float cn_power[XOMBE_SPEC_BINS];
     int cn_ready, cn_updates;
-    xombe_cpx tone_spec[XOMBE_TONE_FFT / 2 + 1]; /* scratch, not carried between frames */
+    xombe_cpx tone_spec[XOMBE_HAVE_TONES ? XOMBE_TONE_FFT / 2 + 1 : 1]; /* scratch, not carried between frames */
     int tone_prev_id, tone_confirmed, tone_hold_used, tone_last_id, tone_last_ad;
     uint8_t tone_req[XOMBE_ENC_DELAY + XOMBE_ENC_LOOKAHEAD + 1][2]; /* forced tone ID (0: none) and AD of each
                                                                       input frame in the delay, newest first */

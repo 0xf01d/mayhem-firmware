@@ -1,4 +1,5 @@
 #include <math.h>
+#include "../dsp/fmath.h"
 #include "tone_table.h"
 #include "bits.h"
 #include "../state.h"
@@ -69,7 +70,7 @@ void xombe__tone_harmonics(int id, float *f0_hz, int *l1, int *l2)
     *l1 = *l2 = 0;
     *f0_hz = SINGLE_F0_MAX_HZ;
     if (kind == 1) {
-        *l1 = (int)ceilf(lo / SINGLE_F0_MAX_HZ);
+        *l1 = (int)xombe__ceilf(lo / SINGLE_F0_MAX_HZ);
         *f0_hz = lo / (float)*l1;
     } else if (kind == 2) {
         *f0_hz = dual_f0[id - DUAL_FIRST];

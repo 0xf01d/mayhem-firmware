@@ -1,4 +1,5 @@
 #include <math.h>
+#include "../dsp/fmath.h"
 #include "../internal.h"
 
 #define LAMBDA_FAST 0.98f
@@ -11,7 +12,7 @@ void xombe__smooth(xombe_dec_core *d, float *a, int L, float f0)
     int l;
     for (l = 1; l <= L; l++)
         sum += a[l] * a[l];
-    r = sqrtf(sum / (float)L);
+    r = xombe__sqrtf(sum / (float)L);
     if (r > d->lambda - 1.0f)
         d->lambda = LAMBDA_FAST * d->lambda + (1.0f - LAMBDA_FAST) * r;
     else

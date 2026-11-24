@@ -1,6 +1,7 @@
 #include <math.h>
 #include <string.h>
 #include "../internal.h"
+#include "../dsp/fmath.h"
 
 #define VAD_BAND_OFFSET 1e-3f
 #define VAD_FLOOR_REL 1e-3f
@@ -32,12 +33,21 @@ static void band_powers(const float *P, float E[8])
 
 static int16_t hist_log(float x)
 {
-    return (int16_t)floorf(log2f(x) * HIST_LOG_ONE + 0.5f);
+    return (int16_t)floorf(xombe__log2f(x) * HIST_LOG_ONE + 0.5f);
 }
 
 static int64_t hist_lin(int16_t q)
 {
-    return (int64_t)(exp2f((float)q / HIST_LOG_ONE) * HIST_LIN_ONE + 0.5f);
+    /* Band powers are normalised to the input's total power, so each one is at most 1.0 and the
+       Q20 figure fits int32 with room to spare. Converting straight to int64 makes GCC call
+       __aeabi_f2lz, which drags in the whole double-precision soft-float chain (4200 B); going
+       through int32 keeps it in the M4's own vcvt and clamps the impossible values instead. */
+    float v = xombe__exp2f((float)q / HIST_LOG_ONE) * HIST_LIN_ONE + 0.5f;
+    if (!(v > 0.0f))
+        return 0;
+    if (v >= 2147483647.0f)
+        return 2147483647LL;
+    return (int64_t)(int32_t)v;
 }
 
 static float noise_floor(const float nl[8])
@@ -56,7 +66,7 @@ static float vad_metric(const float E[8], const float nl[8], float fl)
     float best = 0.0f, second = 0.0f;
     int b;
     for (b = 0; b < 8; b++) {
-        float snr = log2f((E[b] > fl ? E[b] : fl) / (nl[b] > fl ? nl[b] : fl));
+        float snr = xombe__log2f((E[b] > fl ? E[b] : fl) / (nl[b] > fl ? nl[b] : fl));
         if (snr < 0.0f)
             snr = 0.0f;
         if (snr > best) {
@@ -83,8 +93,8 @@ static int vad_release(xombe_enc *e)
         for (i = 0; i < XOMBE_VAD_HIST; i++)
             if (e->vad_hist[i][b] < lo)
                 lo = e->vad_hist[i][b];
-        if ((float)lo > log2f(e->vad_nl[b]) * HIST_LOG_ONE) {
-            e->vad_nl[b] = exp2f((float)lo / HIST_LOG_ONE);
+        if ((float)lo > xombe__log2f(e->vad_nl[b]) * HIST_LOG_ONE) {
+            e->vad_nl[b] = xombe__exp2f((float)lo / HIST_LOG_ONE);
             moved = 1;
         }
     }

@@ -1,5 +1,6 @@
 #include <math.h>
 #include <string.h>
+#include "../dsp/fmath.h"
 #include "../internal.h"
 
 /* 100 Hz suppression bins, NS_BINS_PER_UNIT per cycle/sample */
@@ -26,7 +27,7 @@ void xombe__ns_bins(const float *P, float Xm[XOMBE_NS_BINS])
             acc[b] += P[k];
     }
     for (k = 0; k < XOMBE_NS_BINS; k++)
-        Xm[k] = sqrtf(acc[k]);
+        Xm[k] = xombe__sqrtf(acc[k]);
 }
 
 float xombe__ns_shape(float f)
@@ -117,7 +118,7 @@ void xombe__ns_gain(const xombe_enc *e, xombe_ns_mem *m, const float Xm[XOMBE_NS
 
 static float log2_floored(float x)
 {
-    float d = x > 0.0f ? log2f(x) : NS_MIN_LOG2;
+    float d = x > 0.0f ? xombe__log2f(x) : NS_MIN_LOG2;
     return d < NS_MIN_LOG2 ? NS_MIN_LOG2 : d;
 }
 

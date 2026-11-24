@@ -1,5 +1,6 @@
 #include <math.h>
 #include <string.h>
+#include "../dsp/fmath.h"
 #include "params.h"
 #include "consts.h"
 #include "../tables/tables.h"
@@ -22,7 +23,7 @@ float xombe__clamp_amp(float a)
 
 float xombe__hf_tilt(float f)
 {
-    return f > XOMBE_HF_CORNER ? log2f(f / XOMBE_HF_CORNER) : 0.0f;
+    return f > XOMBE_HF_CORNER ? xombe__log2f(f / XOMBE_HF_CORNER) : 0.0f;
 }
 
 /* L = floor(0.4627/f0): harmonics below about 3.7 kHz, clamped to 9..XOMBE_LMAX */
@@ -31,7 +32,7 @@ float xombe__hf_tilt(float f)
 
 int xombe__L_from_f0(float f0)
 {
-    int L = (int)floorf(L_SCALE / f0);
+    int L = (int)xombe__floorf(L_SCALE / f0);
     if (L < L_MIN)
         L = L_MIN;
     if (L > XOMBE_LMAX)

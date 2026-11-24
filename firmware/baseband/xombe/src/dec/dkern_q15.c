@@ -251,7 +251,7 @@ XOMBE_STATIC_ASSERT(WT_SIZE == 256, wavetable_index_is_top_byte);
 void xombe__dk_add_grain(float *buf, int N, float P, float fhat, float period, const float *tab)
 {
     float E = P + period, th;
-    int nb = (int)ceilf(P), ne = (int)floorf(E), n0 = nb, n1 = ne + GRAIN_RAMP, nin = (int)ceilf(P + GRAIN_RAMP), n;
+    int nb = (int)xombe__ceilf(P), ne = (int)xombe__floorf(E), n0 = nb, n1 = ne + GRAIN_RAMP, nin = (int)xombe__ceilf(P + GRAIN_RAMP), n;
     float ai = XOMBE_PI_F * ((float)nb - P) / GRAIN_RAMP, ao = XOMBE_PI_F * (E - (float)ne) / GRAIN_RAMP;
     float cs, ss, ce, se;
     uint32_t ph, inc = (uint32_t)(fhat * 4294967296.0f); /* fhat < 1/16 */
@@ -262,7 +262,7 @@ void xombe__dk_add_grain(float *buf, int N, float P, float fhat, float period, c
     if (n1 > N + XOMBE_TAIL - 1)
         n1 = N + XOMBE_TAIL - 1;
     th = ((float)n0 - P) * fhat;
-    th -= floorf(th);
+    th -= xombe__floorf(th);
     ph = ((uint32_t)(th * 16777216.0f) & 0xffffffu) << 8;
     for (n = n0; n <= n1 && n < nin; n++, ph += inc)
         buf[n] += ramp(n - nb, cs, ss) * tab_at(tab, ph);
@@ -282,7 +282,7 @@ static float fade(int n, float rs)
 
 static int round_half_up(float x)
 {
-    return (int)floorf(x + 0.5f);
+    return (int)xombe__floorf(x + 0.5f);
 }
 
 void xombe__dk_unvoiced(const int16_t *seg, int N, const xombe_set *cur, const float *M, const uint8_t *vh,
@@ -324,7 +324,7 @@ void xombe__dk_unvoiced(const int16_t *seg, int N, const xombe_set *cur, const f
             e /= (hi - lo);
             if (e <= 0.0f)
                 continue;
-            g = XOMBE_UV_GAIN * (sqrt_L * xombe__sqrt_n[N]) * M[l] / sqrtf(e);
+            g = XOMBE_UV_GAIN * (sqrt_L * xombe__sqrt_n[N]) * M[l] / xombe__sqrtf(e);
             for (k = lo; k < hi; k++) {
                 Y[k].re = X[k].re * g;
                 Y[k].im = X[k].im * g;

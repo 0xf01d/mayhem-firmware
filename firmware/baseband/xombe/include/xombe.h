@@ -217,13 +217,33 @@ typedef struct xombe_enc xombe_enc;
 #define XOMBE_ENC_CQ_SIZE 0
 #else
 #define XOMBE_ENC_DSTAR_SIZE 0
+#if XOMBE_HAVE_CQUANT
 #define XOMBE_ENC_CQ_SIZE 19968
+#else
+/* the closed-loop quantizer is compiled out, so its workspace is dead weight:
+ * reserving it here costs an image 19.5 KiB of RAM it cannot use. */
+#define XOMBE_ENC_CQ_SIZE 0
+#endif
 #endif
 #if XOMBE_KERNELS_Q15
-#define XOMBE_ENC_SIZE (39424 + XOMBE_ENC_DSTAR_SIZE + XOMBE_ENC_CQ_SIZE)
+/* Upstream's worst case is 39424 B: three seconds of VAD history and the
+ * float-only window transform table. This build keeps 1.28 s of history, has no
+ * wtab on the q15 kernel path, and the q15 kernel stores its pitch
+ * autocorrelation as int16 instead of the float/int16 union, which brings the
+ * struct to 28568 B; 28608 rounds that up to 64 B. xombe_enc_init checks
+ * XOMBE_ENC_SIZE against sizeof(struct xombe_enc) at run time.
+ */
+#define XOMBE_ENC_SIZE (28608 + XOMBE_ENC_DSTAR_SIZE + XOMBE_ENC_CQ_SIZE)
 #else
 #define XOMBE_ENC_SIZE (25088 + XOMBE_ENC_DSTAR_SIZE + XOMBE_ENC_CQ_SIZE)
 #endif
+
+/* XOMBE_ENC_SIZE is a fixed worst case, not sizeof(struct xombe_enc): it is
+ * what a caller has to reserve without seeing the private struct. Keep it in
+ * step with the fields actually compiled in, or the image reserves RAM it never
+ * uses (39424 with the tone scratch and the float-only window table, 33008
+ * once those are conditional).
+ */
 typedef union {
     int64_t align_i;
     void *align_p;

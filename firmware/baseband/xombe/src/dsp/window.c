@@ -1,4 +1,5 @@
 #include <math.h>
+#include "../dsp/fmath.h"
 #include "../internal.h"
 
 /* sin(pi*r/m) for m > 0, r reduced exactly to |r| <= m/2 first so the argument carries a single rounding
@@ -14,7 +15,10 @@ float xombe__sin_ratio(long r, long m)
         r = m - r;
     else if (2 * r < -m)
         r = -m - r;
-    return sinf(XOMBE_PI_F * ((float)r / (float)m));
+    float s_, c_;
+    xombe__sincosf(XOMBE_PI_F * ((float)r / (float)m), &s_, &c_);
+    (void)c_;
+    return s_;
 }
 
 /* cos(2 pi i/(n - 1)) as sin(pi (4i + n - 1)/(2(n - 1))) */
@@ -47,7 +51,10 @@ static float sin_ratio_pow2(long t, long g)
         t = g - t;
     else if (2 * t < -g)
         t = -g - t;
-    return sinf(XOMBE_PI_F * ((float)t * (1.0f / (float)g)));
+    float s_, c_;
+    xombe__sincosf(XOMBE_PI_F * ((float)t * (1.0f / (float)g)), &s_, &c_);
+    (void)c_;
+    return s_;
 }
 
 /* transform of the centred xombe__hamming(n) at q/g cycles/sample (0 <= q < g/2): Dirichlet kernels at

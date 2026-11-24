@@ -153,7 +153,7 @@ static void first_half_voice_after_voice(const xombe_dec_core *d, const xombe_se
     else if (!xombe__count_voiced(c->vb))
         f1 = d->pi.f0;
     else
-        f1 = sqrtf(d->pi.f0 * c->f0);
+        f1 = xombe__sqrtf(d->pi.f0 * c->f0);
     L1 = xombe__L_from_f0(f1);
     rc = f1 / c->f0;
     rp = f1 / d->pi.f0;
@@ -327,7 +327,7 @@ static void synth_half(xombe_dec *d, xombe_set *s, int first_half, int N, int16_
     xombe__synth_voiced(d, s, M, vh, voiced, N, x);
     XOMBE_TAP(&d->c, XOMBE_STAGE_SYNTH, s->f0, x, N);
     for (n = 0; n < N; n++) {
-        float y = floorf(xombe__hpf_step(&d->hpf, x[n]) + 0.5f);
+        float y = xombe__floorf(xombe__hpf_step(&d->hpf, x[n]) + 0.5f);
         if (y > 32767.0f)
             y = 32767.0f;
         if (y < -32768.0f)

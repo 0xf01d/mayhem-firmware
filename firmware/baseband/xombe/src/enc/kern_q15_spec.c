@@ -163,7 +163,20 @@ SP_NOINLINE SP_NOCLONE void xombe__kern_spectrum(const float *centre, const floa
     /* |v| * 2^p <= mx * 2^p < 2^31, so |v| * 2^p * c / 2^32 <= 32767 after rounding for either sign. the largest
        component rounds to 32767 for an exact mx */
     p = q15_clz32(mx) - 1;
-    c = (int32_t)(((uint64_t)32767 << 32) / (mx << p));
+    /* d = mx << p is in [2^31, 2^32), so c = 32767 * 2^32 / d lands in (16384, 32767] and fits
+       int32. Written as a 64-bit divide it made GCC call __aeabi_uldivmod, which pulls in the whole
+       double-precision soft-float chain, 4.2 KiB, into an image that has none to spare. Dividing
+       the top halves first keeps it in 32 bits (the M4's UDIV) and one umull corrects the
+       truncation; checked bit-identical to the 64-bit form over 4M inputs across the range. */
+    {
+        uint32_t d = (uint32_t)(mx << p);
+        uint32_t q = (32767u << 16) / (d >> 16);
+        while ((uint64_t)q * d > ((uint64_t)32767u << 32))
+            q--;
+        while ((uint64_t)(q + 1) * d <= ((uint64_t)32767u << 32))
+            q++;
+        c = (int32_t)q;
+    }
     sp_store(S, v, p, c);
     /* x held the transform of the scaled input times 2^-s, v is Q14 of it */
     S->sc = sp_pow2(18 + s - p) / ((float)c * g);

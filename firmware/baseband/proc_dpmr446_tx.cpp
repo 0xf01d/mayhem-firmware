@@ -19,6 +19,7 @@
  * Boston, MA 02110-1301, USA.
  */
 
+#include "proc_dpmr446_state.hpp"
 #include "proc_dpmr446_tx.hpp"
 
 #include "event_m4.hpp"
@@ -33,8 +34,19 @@
 
 namespace {
 /* Encoder state in static storage: too large for the processor heap
- * allocation, fits M4 RAM beside the stacks. */
-__attribute__((aligned(8))) uint8_t enc_mem[XOMBE_ENC_SIZE];
+ * allocation, fits M4 RAM beside the stacks.
+ *
+ * It lives in the .vocoder_state section, which the voice/TX linker script
+ * places in Local SRAM Bank 1 next to the code. Bank 2 only has 32 KiB and the
+ * encoder alone wants 39 KiB, so leaving it in .bss would not link.
+ */
+#if defined(DPMR446_DUAL_IMAGE)
+/* The combined image shares one buffer with the receive half: only one
+ * direction ever runs per boot. See proc_dpmr446_state.cpp. */
+#define enc_mem dpmr446_vocoder_state
+#else
+__attribute__((aligned(8), section(".vocoder_state"))) uint8_t enc_mem[XOMBE_ENC_SIZE];
+#endif
 
 class StateLock {
    public:
@@ -370,10 +382,12 @@ void DPMRTxProcessor::execute(const buffer_c8_t& buffer) {
     }
 }
 
-int main() {
+int dpmr446_tx_entry() {
     audio::dma::init_audio_in();
 
     EventDispatcher event_dispatcher{std::make_unique<DPMRTxProcessor>()};
     event_dispatcher.run();
     return 0;
 }
+
+

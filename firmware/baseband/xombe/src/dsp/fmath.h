@@ -28,14 +28,19 @@ static inline int32_t xombe__fmath_rnd_int(float t)
     return (int32_t)(u & 0x7fffffu) - 0x400000;
 }
 
-/* x = k + f, |f| <= 1/2, 2^f by the Cephes exp2f polynomial, 2^k in the exponent field. libm outside
-   (-126, 128), where the result may be subnormal, infinite, or NaN */
+/* x = k + f, |f| <= 1/2, 2^f by the Cephes exp2f polynomial, 2^k in the exponent field.
+   Outside (-126, 128) the result is subnormal, infinite or NaN; a vocoder has no use for any of
+   those (the amplitudes are bounded by XOMBE_AMP_MIN/MAX, dB figures by a few hundred), so the
+   range is clamped instead of deferring to libm. Deferring is what used to drag powf and the
+   double-precision helpers into the image, 2.4 KiB of code for a branch that never runs. */
 static inline float xombe__exp2f(float x)
 {
     float t, f, p;
     int32_t k;
-    if (!(x > -126.0f && x < 128.0f))
-        return exp2f(x);
+    if (!(x > -126.0f))
+        x = -126.0f;
+    if (!(x < 128.0f))
+        x = 128.0f;
     t = x + XOMBE_FMATH_RND;
     k = xombe__fmath_rnd_int(t);
     f = x - (t - XOMBE_FMATH_RND);
@@ -51,6 +56,44 @@ static inline float xombe__exp2f(float x)
     return p * xombe__fmath_from_bits((uint32_t)(k + 127) << 23);
 }
 
+/* floor/ceil on the float value: libm's versions pull in the double-precision
+   __floordf/__ceildf chain plus the rounding helpers, several KiB the images do
+   not have. Valid for |x| < 2^22, which every caller here respects (indices and
+   harmonic counts), and truncation toward zero is exact in the M4's vcvt. */
+static inline float xombe__floorf(float x)
+{
+    int32_t i = (int32_t)x;
+    float f = (float)i;
+    return (x < f) ? f - 1.0f : f;
+}
+
+static inline float xombe__ceilf(float x)
+{
+    int32_t i = (int32_t)x;
+    float f = (float)i;
+    return (x > f) ? f + 1.0f : f;
+}
+
+/* sqrt via the M4 FPU's vsqrt.f32 when the compiler can use it, else a Newton
+   iteration on the float value. libm's sqrtf drags in __ieee754_sqrtf and its
+   wrappers (~3 KiB), which the TX image cannot afford. */
+static inline float xombe__sqrtf(float x)
+{
+#if defined(__ARM_FP)
+    float r;
+    __asm__("vsqrt.f32 %0, %1" : "=w"(r) : "w"(x));
+    return r;
+#else
+    float r;
+    if (!(x > 0.0f))
+        return 0.0f;
+    r = x > 1.0f ? x : 1.0f;
+    for (int i = 0; i < 6; i++)
+        r = 0.5f * (r + x / r);
+    return r;
+#endif
+}
+
 /* x = 2^e * (1 + m), 1 + m in [sqrt(1/2), sqrt 2), ln(1 + m) by the Cephes logf polynomial, times log2(e) in two
    parts (1 and log2(e) - 1) so m and e enter unrounded. libm for zero, subnormals, negatives, infinity, and NaN */
 static inline float xombe__log2f(float x)
@@ -58,8 +101,10 @@ static inline float xombe__log2f(float x)
     uint32_t u;
     int32_t e;
     float m, z, y, p;
-    if (!(x >= 1.17549435e-38f && x <= 3.40282347e38f))
-        return log2f(x);
+    if (!(x >= 1.17549435e-38f))
+        x = 1.17549435e-38f;
+    else if (!(x <= 3.40282347e38f))
+        x = 3.40282347e38f;
     memcpy(&u, &x, sizeof(u));
     e = (int32_t)(u >> 23) - 127;
     u = (u & 0x7fffffu) | 0x3f800000u;
@@ -89,9 +134,12 @@ static inline void xombe__sincosf(float x, float *s, float *c)
     float t, r, z, sp, cp;
     int32_t q;
     if (!(fabsf(x) < 2048.0f)) {
-        *s = sinf(x);
-        *c = cosf(x);
-        return;
+        /* the vocoder only ever asks for an angle inside one period; wrap by repeated
+           subtraction rather than calling fmodf, which would drag libm back in */
+        while (x > 6.283185307179586f)
+            x -= 6.283185307179586f;
+        while (x < -6.283185307179586f)
+            x += 6.283185307179586f;
     }
     t = x * 0.636619772f + XOMBE_FMATH_RND;
     q = xombe__fmath_rnd_int(t);

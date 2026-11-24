@@ -1,5 +1,6 @@
 #include <math.h>
 #include <string.h>
+#include "../dsp/fmath.h"
 #include "../internal.h"
 #include "../tables/dsp_tables.h"
 #include "kernels.h"
@@ -28,7 +29,7 @@ void xombe__enc_integrate(const float *P, int L, float f0, float *a)
     a[0] = 0.0f;
     for (l = 1; l <= L; l++) {
         float lo = ((float)l - 0.5f) * step, hi = ((float)l + 0.5f) * step, m2 = 0.0f;
-        int k0 = (int)floorf(lo + 0.5f), k1 = (int)ceilf(hi + 0.5f);
+        int k0 = (int)xombe__floorf(lo + 0.5f), k1 = (int)xombe__ceilf(hi + 0.5f);
         if (k0 < 0)
             k0 = 0;
         if (k1 > XOMBE_SPEC_BINS - 1)
@@ -39,7 +40,7 @@ void xombe__enc_integrate(const float *P, int L, float f0, float *a)
             if (c > 0.0f)
                 m2 += (c > 1.0f ? 1.0f : c) * P[k];
         }
-        a[l] = m2 > 0.0f ? 0.5f * log2f(m2) : XOMBE_AMP_MIN;
+        a[l] = m2 > 0.0f ? 0.5f * xombe__log2f(m2) : XOMBE_AMP_MIN;
         if (a[l] < XOMBE_AMP_MIN)
             a[l] = XOMBE_AMP_MIN;
     }
