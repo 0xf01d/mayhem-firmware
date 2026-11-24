@@ -842,6 +842,13 @@ set(MODE_CPPSRC
 )
 DeclareTargets(PTET tetra_rx)
 
+### dPMR446 Rx
+
+set(MODE_CPPSRC
+	proc_dpmr444.cpp
+)
+DeclareTargets(PDPR dpmr444)
+
 ### FT8 RX
 
 set(MODE_CPPSRC

@@ -182,6 +182,8 @@ class Message {
         WMBusPacketMessageID = 123,
         VDL2Frame = 124,
         SubGhzChatPacket = 125,
+        DPMRFrame = 126,
+        DPMRTchData = 127,
         MAX
     };
 
@@ -2204,6 +2206,51 @@ struct TetraDnbMessage : public Message {
 
     // 432 TCH type-5 bits: 216 bits before the training sequence + 216 bits after.
     std::array<uint8_t, 54> payload;
+};
+
+/* dPMR446 (pmr446 app): control information of one decoded frame
+ * (ETSI TS 102 490). Frame type selects which fields are meaningful. */
+struct DPMRFrameMessage : public Message {
+    enum FrameType : uint8_t {
+        CCH = 0,
+        HEADER = 1,
+        END = 2,
+    };
+
+    constexpr DPMRFrameMessage()
+        : Message{ID::DPMRFrame} {}
+
+    uint8_t frame_type{CCH};
+    uint8_t frame_number{0};   /* CCH: 0..3 */
+    uint16_t colour_code{0};   /* 12-bit channel code (table 6.1) */
+    uint32_t called_id{0};     /* 24-bit, assembled over the superframe (9.1) */
+    uint32_t own_id{0};        /* 24-bit */
+    uint8_t comm_mode{0};      /* 3 bits (5.7) */
+    uint8_t version{0};        /* 2 bits (5.16) */
+    uint8_t comm_format{0};    /* 2 bits (5.8) */
+    uint32_t sld{0};           /* 18-bit slow data field (5.9) */
+    uint8_t header_type{0};    /* 4 bits (5.11), header frames */
+    uint8_t ci_type{0};        /* 3 bits (5.10), header frames */
+    uint8_t ci_info{0};        /* 8 bits, header frames */
+    uint8_t end_type{0};       /* 2 bits (5.13), end frames */
+    uint8_t arq{0};            /* 2 bits (5.14), end frames */
+    uint8_t tx_wait{0};        /* 4 bits (5.14), end frames */
+    uint8_t status{0};         /* 5 bits, end frames */
+    uint8_t corrected{0};      /* Hamming single-bit corrections (7.3) */
+    uint8_t failed_blocks{0};  /* uncorrectable blocks */
+    bool crc_ok{false};
+};
+
+/* dPMR446 (pmr446 app): descrambled TCH payload of one frame (9.1). */
+struct DPMRTchDataMessage : public Message {
+    static constexpr size_t MAX_LENGTH = 36;  /* 288 bits */
+
+    constexpr DPMRTchDataMessage()
+        : Message{ID::DPMRTchData} {}
+
+    uint8_t frame_number{0};
+    uint8_t length{MAX_LENGTH};
+    uint8_t data[MAX_LENGTH]{};
 };
 /* Spectrum Analyzer ******************************************************/
 
