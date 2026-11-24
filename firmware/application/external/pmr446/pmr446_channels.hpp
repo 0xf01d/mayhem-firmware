@@ -22,11 +22,10 @@
 #ifndef __PMR446_CHANNELS_H__
 #define __PMR446_CHANNELS_H__
 
-/* Channel plans for the PMR446 app: analogue PMR446 (16 x 12.5 kHz NFM)
- * and digital dPMR446 (32 x 6.25 kHz 4FSK, tables 6.1/6.2 of TS 102 490,
- * carried in the shared dpmr.hpp codec). */
+/* Analogue PMR446 channel plan (16 x 12.5 kHz NFM, ECC/DEC/(15)05). */
 
-#include "dpmr.hpp"
+#include <cstddef>
+#include <cstdint>
 
 namespace pmr446 {
 
@@ -36,12 +35,6 @@ constexpr size_t analog_channel_count = 16;
 constexpr uint32_t analog_frequency_hz(size_t channel) {
     return 446006250 + (channel - 1) * 12500;
 }
-
-using dpmr::channel_count;
-using dpmr::channel_frequency_hz;
-using dpmr::channel_code_24;
-using dpmr::channel_code_decode;
-using dpmr::isf_common_id;
 
 } /* namespace pmr446 */
 
