@@ -102,7 +102,12 @@ include(${CHIBIOS}/os/hal/hal.cmake)
 include(${CHIBIOS_PORTAPACK}/os/ports/GCC/ARMCMx/LPC43xx_M4/port.cmake)
 include(${CHIBIOS}/os/kernel/kernel.cmake)
 
-include(${CHIBIOS}/test/test.cmake)
+# The ChibiOS RT test suite (test.c, testbmk.c, testmtx.c, ...) is compiled into
+# "baseband_shared" by upstream but no baseband image ever calls test_exec():
+# it is dead code that --gc-sections cannot drop because the test entry points
+# are exported. Leave it out, it is ~9.7 KiB of every image.
+# include(${CHIBIOS}/test/test.cmake)
+set(TESTSRC)
 
 # Define linker script file here
 set(LDSCRIPT ${PORTLD}/LPC43xx_M4.ld)
@@ -311,10 +316,41 @@ include_directories(. ${INCDIR})
 set(BASEBAND_IMAGES)
 set(BASEBAND_EXTERNAL_IMAGES)
 
+# DeclareTargets(chunk_tag name [LINK_IN_SRAM1])
+#
+# LINK_IN_SRAM1 links the image into Local SRAM Bank 1 ("LPC43xx_M4_sram1.ld")
+# instead of Bank 2, which lifts the 32 KiB "flash" cap at the cost of the
+# image no longer sharing m4_code with an external app: the app has to load it
+# at memory::map::m4_code_hackrf and point M4MEMMAP there, as main.cpp does for
+# the bundled hackrf.img. Only use it for an image the app loads itself.
 macro(DeclareTargets chunk_tag name)
 	project("baseband_${name}")
 
+	set(LDSCRIPT ${PORTLD}/LPC43xx_M4.ld)
+	if("${ARGV2}" STREQUAL "LINK_IN_SRAM1")
+		set(LDSCRIPT ${PORTLD}/LPC43xx_M4_sram1.ld)
+	elseif("${ARGV2}" STREQUAL "LINK_COMBINED")
+		# Both AMBE+2 directions in one image: code and stacks in Bank 1, the
+		# vocoder's codebooks in Bank 2. See the script's header for the budget.
+		set(LDSCRIPT ${PORTLD}/LPC43xx_M4_combined.ld)
+	endif()
+
 	include(${RULESPATH}/rules.cmake)
+
+	# "rules.cmake" bakes the linker script into CMAKE_EXE_LINKER_FLAGS, which is
+	# a directory-scope variable: every image declared here would get whichever
+	# script the last DeclareTargets call set. Take it out of the shared flags and
+	# hand each target its own, so one image can live in Local SRAM Bank 1 while
+	# the others keep the Bank 2 layout.
+	set(_bb_ldscript "${LDSCRIPT}")
+	string(REPLACE ",--script=${LDSCRIPT}" "" _bb_flags "${CMAKE_EXE_LINKER_FLAGS}")
+	if(_bb_flags STREQUAL "${CMAKE_EXE_LINKER_FLAGS}")
+		# no ",--script=" to strip (rules.cmake wrote it differently): strip the
+		# option on its own, leaving no empty comma-separated entry behind.
+		string(REGEX REPLACE ",?--script=[^ ,]*" "" _bb_flags "${CMAKE_EXE_LINKER_FLAGS}")
+		string(REPLACE ",," "," _bb_flags "${_bb_flags}")
+	endif()
+	set(CMAKE_EXE_LINKER_FLAGS "${_bb_flags}")
 	set_source_files_properties(${MODE_CPPSRC} PROPERTIES COMPILE_FLAGS "${MODE_FLAGS}")
 	add_executable(${PROJECT_NAME}.elf $<TARGET_OBJECTS:baseband_shared> ${MODE_CPPSRC} ${HALSRC} ${PLATFORMSRC})
 	set_target_properties(${PROJECT_NAME}.elf PROPERTIES LINK_DEPENDS ${LDSCRIPT})
@@ -326,6 +362,7 @@ macro(DeclareTargets chunk_tag name)
 
 	target_link_libraries(${PROJECT_NAME}.elf -Wl,-Map=${PROJECT_NAME}.map)
 	target_link_libraries(${PROJECT_NAME}.elf -Wl,--print-memory-usage)
+	target_link_libraries(${PROJECT_NAME}.elf "-Wl,--script=${_bb_ldscript}")
 
 	if(add_to_firmware)
 
@@ -847,7 +884,122 @@ DeclareTargets(PTET tetra_rx)
 set(MODE_CPPSRC
 	proc_dpmr444.cpp
 )
+set(MODE_FLAGS "-Os")
 DeclareTargets(PDPR dpmr444)
+set(MODE_FLAGS "-O3")
+
+### dPMR446 voice RX / TX
+#
+# Both images need the vendored xombe AMBE+2 vocoder (voice RX decodes, TX
+# The vocoder does not fit the 32752 B Bank 2 cap, so both voice images are
+# linked into Local SRAM Bank 1 instead, which the baseband images do not use
+# ("LPC43xx_M4_sram1.ld", 90112 B on HackRF One). That is where the bundled
+# hackrf.img already runs: the app loads the image at m4_code_hackrf and points
+# M4MEMMAP there.
+set(XOMBE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/xombe)
+set(XOMBE_INCDIR ${XOMBE_DIR} ${XOMBE_DIR}/include)
+set(XOMBE_COMMON_SRC
+	xombe/src/common/bits.c
+	xombe/src/common/params.c
+	xombe/src/common/tone_table.c
+	xombe/src/common/voicing.c
+	xombe/src/dsp/biquad.c
+	xombe/src/dsp/lcg.c
+	xombe/src/dsp/window.c
+	xombe/src/fec/golay.c
+	xombe/src/fec/interleave.c
+	xombe/src/fec/pn.c
+	xombe/src/fec/stats.c
+	xombe/src/tables/dsp_tables.c
+	xombe/src/tables/tables.c
+)
+set(XOMBE_DEC_SRC
+	xombe/src/dec/conceal.c
+	xombe/src/dec/decoder.c
+	xombe/src/dec/dkern_q15.c
+	xombe/src/dec/enhance.c
+	xombe/src/dec/smooth.c
+	xombe/src/dec/synth_tone.c
+	xombe/src/dec/synth_unvoiced.c
+	xombe/src/dec/synth_voiced.c
+)
+set(XOMBE_ENC_SRC
+	xombe/src/enc/ambe2_enc.c
+	xombe/src/enc/analysis.c
+	xombe/src/enc/comfort.c
+	xombe/src/enc/encoder.c
+	xombe/src/enc/frontend.c
+	xombe/src/enc/kern_q15_lf.c
+	xombe/src/enc/kern_q15_pitch.c
+	xombe/src/enc/kern_q15_spec.c
+	xombe/src/enc/ns.c
+	xombe/src/enc/pitch.c
+	xombe/src/enc/quant.c
+	xombe/src/enc/vad.c
+	xombe/src/enc/voicing_metric.c
+)
+
+# The vocoder plus the demodulator is close to the 32k image ceiling, so the
+# voice image is built for size; the signalling image keeps -O3.
+#
+# IMPORTANT: the AMBE+2 voice images do NOT fit the 32752 B baseband cap on this
+# toolchain. Measured on this tree (see the lane report):
+#   voice RX  63712 B, TX 60016 B, decoder-only floor with all math stubbed
+#   35692 B. That cap is why both images are linked into Local SRAM Bank 1
+#   instead (LINK_IN_SRAM1, 90112 B); they still have to stay under that.
+option(DPMR446_VOICE_IMAGE "Build the dPMR446 AMBE+2 voice/TX images (linked in Local SRAM Bank 1)" ON)
+
+if(DPMR446_VOICE_IMAGE)
+	set(MODE_INCDIR ${XOMBE_INCDIR})
+	# NDEBUG: xombe's encoder has an assert() in the line-fit kernel, and nano libc's assert
+	# pulls fiprintf, _vfiprintf_r and _printf_i into the image - 1.8 KiB of stdio in a baseband
+	# that has nowhere to print to. The FT8 image below kills fprintf the same way.
+	set(MODE_FLAGS "-Os -flto -ffunction-sections -fdata-sections -fno-unwind-tables -DNDEBUG")
+	set(MODE_CPPSRC
+		proc_dpmr446_voice_main.cpp
+		proc_dpmr446_voice.cpp
+		${XOMBE_COMMON_SRC}
+		${XOMBE_DEC_SRC}
+	)
+	DeclareTargets(PDMV dpmr446_voice LINK_IN_SRAM1)
+
+	set(MODE_INCDIR ${XOMBE_INCDIR})
+	set(MODE_FLAGS "-Os -flto -ffunction-sections -fdata-sections -fno-unwind-tables -DNDEBUG")
+	set(MODE_CPPSRC
+		proc_dpmr446_tx_main.cpp
+		proc_dpmr446_tx.cpp
+		${XOMBE_COMMON_SRC}
+		${XOMBE_ENC_SRC}
+	)
+	DeclareTargets(PDMT dpmr446_tx LINK_IN_SRAM1)
+
+	# Both directions in one image. Measured on this tree: the code alone is
+	# 80608 B and the encoder state 28608 B, so Bank 1 (90112 B) holds the code
+	# and no state, and Bank 2 (32752 B) holds the state and no stacks. It needs
+	# about 123 KiB of local SRAM; HackRF One has 90112 + 32752 B in two regions
+	# that cannot be merged, and Bank 2 is also where the app's M0 code is
+	# loaded. Praline has 128 KiB in Bank 1 and links this image at 88 %.
+	# Off by default: on HackRF One it does not fit, and the app selects the
+	# direction by loading one image or the other.
+	option(DPMR446_COMBINED_IMAGE "Build one dPMR446 image with both directions (128 KiB boards only)" OFF)
+	if(DPMR446_COMBINED_IMAGE)
+	set(MODE_INCDIR ${XOMBE_INCDIR})
+	set(MODE_FLAGS "-Os -flto -ffunction-sections -fdata-sections -fno-unwind-tables -DNDEBUG -DDPMR446_DUAL_IMAGE")
+	set(MODE_CPPSRC
+		proc_dpmr446_mode.cpp
+		proc_dpmr446_state.cpp
+		proc_dpmr446_main.cpp
+		proc_dpmr446_voice.cpp
+		proc_dpmr446_tx.cpp
+		${XOMBE_COMMON_SRC}
+		${XOMBE_DEC_SRC}
+		${XOMBE_ENC_SRC}
+	)
+	DeclareTargets(PDMB dpmr446_both LINK_COMBINED)
+	endif()
+endif()
+set(MODE_INCDIR)
+set(MODE_FLAGS "-O3")
 
 ### FT8 RX
 

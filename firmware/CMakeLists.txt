@@ -128,6 +128,11 @@ add_custom_command(
 	COMMAND cp ${FIRMWARE_FILENAME} firmware_tar/FIRMWARE/portapack-mayhem_${VERSION_NOHASH}.bin
 	COMMAND mkdir -p firmware_tar/APPS
 	COMMAND cp application/*.ppma firmware_tar/APPS
+	# dPMR446 voice images: too large for SPI flash (42-47 KiB compressed against
+	# 13.7 KiB free), loaded by the app from APPS/dpmr446/ at run time.
+	COMMAND mkdir -p firmware_tar/APPS/dpmr446
+	COMMAND cp baseband/PDMV.bin firmware_tar/APPS/dpmr446/
+	COMMAND cp baseband/PDMT.bin firmware_tar/APPS/dpmr446/
 	COMMAND cp standalone/*/*.ppmp firmware_tar/APPS
 	COMMAND cd firmware_tar && tar -caf ../${PPFW_FILENAME} *
 	DEPENDS firmware ${FIRMWARE_FILENAME} standalone_apps

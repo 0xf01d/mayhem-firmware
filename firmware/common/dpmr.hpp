@@ -199,8 +199,10 @@ struct DecodeResult {
     bool crc_ok{false};
 };
 
-/* 7.6: CCH 41 bits -> +CRC7 -> 6 x Hamming(12,8) -> 12x6 interleave -> scramble. */
-inline void encode_cch(const uint8_t cch[cch_bits], uint8_t out[cch_fec_bits]) {
+/* 7.6 chain without the final scramble: data superframes scramble CCH and
+ * TCH together as one 360-bit run (9.2/9.3), so their CCH is assembled
+ * unscrambled and the whole frame scrambled afterwards. */
+inline void encode_cch_coded(const uint8_t cch[cch_bits], uint8_t out[cch_fec_bits]) {
     uint8_t msg[48];
     for (size_t i = 0; i < cch_bits; i++)
         msg[i] = cch[i] & 1u;
@@ -213,15 +215,20 @@ inline void encode_cch(const uint8_t cch[cch_bits], uint8_t out[cch_fec_bits]) {
         hamming_encode_block(&msg[b * 8], &coded[b * 12]);
 
     interleave(coded, out, 6);
+}
+
+/* 7.6: CCH 41 bits -> +CRC7 -> 6 x Hamming(12,8) -> 12x6 interleave -> scramble. */
+inline void encode_cch(const uint8_t cch[cch_bits], uint8_t out[cch_fec_bits]) {
+    encode_cch_coded(cch, out);
     scramble(out, cch_fec_bits);
 }
 
-/* Inverse of encode_cch. Fields are extracted with unpack_cch(). */
-inline DecodeResult decode_cch(const uint8_t in[cch_fec_bits], uint8_t cch[cch_bits]) {
+/* FEC decoding of an already-descrambled CCH block (used by the combined
+ * data-frame decode, 9.2/9.3). Fields are extracted with unpack_cch(). */
+inline DecodeResult decode_cch_coded(const uint8_t in[cch_fec_bits], uint8_t cch[cch_bits]) {
     uint8_t work[cch_fec_bits];
     for (size_t i = 0; i < cch_fec_bits; i++)
         work[i] = in[i] & 1u;
-    scramble(work, cch_fec_bits);
 
     uint8_t coded[cch_fec_bits];
     deinterleave(work, coded, 6);
@@ -243,6 +250,16 @@ inline DecodeResult decode_cch(const uint8_t in[cch_fec_bits], uint8_t cch[cch_b
         crc_rx = static_cast<uint8_t>((crc_rx << 1) | (msg[cch_bits + i] & 1u));
     res.crc_ok = (crc7(msg, cch_bits) == crc_rx);
     return res;
+}
+
+/* Decoding of a voice-superframe CCH: it is scrambled on its own 72-bit
+ * run (9.1), unlike the combined CCH+TCH run of the data superframes. */
+inline DecodeResult decode_cch(const uint8_t in[cch_fec_bits], uint8_t cch[cch_bits]) {
+    uint8_t work[cch_fec_bits];
+    for (size_t i = 0; i < cch_fec_bits; i++)
+        work[i] = in[i] & 1u;
+    scramble(work, cch_fec_bits);
+    return decode_cch_coded(work, cch);
 }
 
 /* 7.7: HI 72 bits -> +CRC8 -> 10 x Hamming(12,8) -> 12x10 interleave -> scramble. */
@@ -373,6 +390,29 @@ inline void u32_to_bits(uint32_t value, uint8_t* bits, size_t count) {
     for (size_t i = count; i > 0; i--) {
         bits[i - 1] = value & 1u;
         value >>= 1;
+    }
+}
+
+inline void u64_to_bits(uint64_t value, uint8_t* bits, size_t count) {
+    for (size_t i = count; i > 0; i--) {
+        bits[i - 1] = value & 1u;
+        value >>= 1;
+    }
+}
+
+/* Bytes <-> bits, MSB of byte 0 transmitted first (clause 9.0). */
+inline void bytes_to_bits(const uint8_t* bytes, uint8_t* bits, size_t byte_count) {
+    for (size_t i = 0; i < byte_count; i++)
+        for (size_t b = 0; b < 8; b++)
+            bits[i * 8 + b] = (bytes[i] >> (7 - b)) & 1u;
+}
+
+inline void bits_to_bytes(const uint8_t* bits, uint8_t* bytes, size_t byte_count) {
+    for (size_t i = 0; i < byte_count; i++) {
+        uint8_t v = 0;
+        for (size_t b = 0; b < 8; b++)
+            v = static_cast<uint8_t>((v << 1) | (bits[i * 8 + b] & 1u));
+        bytes[i] = v;
     }
 }
 
@@ -576,6 +616,278 @@ inline bool b2_decode(uint32_t addr, uint8_t out[7]) {
     out[1] = (high / 10u) % 10u;
     out[0] = (high / 100u) % 10u;
     return true;
+}
+
+/* SLD for data superframes (5.9.2): RES(5) DP(2) Format(4) Cont(1) Length(6).
+ * DP = 11 marks a data superframe; Format 0010 is free text. */
+inline uint32_t pack_sld_data(uint8_t dp, uint8_t format, uint8_t cont, uint8_t length) {
+    return (0u << 13) | ((dp & 0x3u) << 11) | ((format & 0xFu) << 7) | ((cont & 0x1u) << 6) | (length & 0x3Fu);
+}
+
+/* ------------------------------------- Transmit frame assembly (4.2.2) */
+
+constexpr size_t preamble_bits_min = 72; /* 6.1.6, repeated 0x5F */
+constexpr size_t header_frame_bits = preamble_bits_min + 48 + hi_fec_bits + 24 + hi_fec_bits; /* 384 */
+constexpr size_t payload_frame_bits = 24 + cch_fec_bits + tch_frame_bits;                    /* 384 */
+constexpr size_t end_frame_total_bits = 24 + end_fec_bits;                                   /* 96 */
+
+/* One call's addressing and mode fields, shared by header and payload CCH. */
+struct TxCall {
+    uint16_t cc12{0};      /* 12-bit channel code value, table 6.1 */
+    uint32_t called_id{0}; /* 24-bit */
+    uint32_t own_id{0};    /* 24-bit */
+    uint8_t comm_mode{0};  /* M, 5.7 */
+    uint8_t version{0};    /* V, 5.16 */
+    uint8_t comm_format{0}; /* F, 5.8: 00 all call, 01 peer-to-peer */
+};
+
+inline void put_preamble(uint8_t* bits, size_t count) {
+    for (size_t i = 0; i < count; i++)
+        bits[i] = (preamble_byte >> (7 - (i % 8))) & 1u;
+}
+
+/* Header frame (9.5): preamble(72) FS1(48) HI0(120) CC(24) HI1(120). */
+inline void encode_header_frame(
+    const TxCall& c,
+    uint8_t header_type,
+    uint8_t ci_type,
+    uint8_t ci_info,
+    uint8_t out[header_frame_bits]) {
+    HiFields f;
+    f.header_type = header_type;
+    f.called_id = c.called_id;
+    f.own_id = c.own_id;
+    f.comm_mode = c.comm_mode;
+    f.version = c.version;
+    f.comm_format = c.comm_format;
+    f.ci_type = ci_type;
+    f.ci_info = ci_info;
+    uint8_t hi_bits_v[hi_bits], hi_coded[hi_fec_bits];
+    pack_hi(f, hi_bits_v);
+    encode_hi(hi_bits_v, hi_coded);
+
+    put_preamble(out, preamble_bits_min);
+    u64_to_bits(fs1, out + preamble_bits_min, 48);
+    for (size_t i = 0; i < hi_fec_bits; i++)
+        out[preamble_bits_min + 48 + i] = hi_coded[i];
+    uint8_t cc24[24];
+    channel_code_encode(c.cc12, cc24);
+    for (size_t i = 0; i < 24; i++)
+        out[preamble_bits_min + 48 + hi_fec_bits + i] = cc24[i];
+    for (size_t i = 0; i < hi_fec_bits; i++)
+        out[preamble_bits_min + 48 + hi_fec_bits + 24 + i] = hi_coded[i];
+}
+
+/* End frame (9.6): FS3(24) + two coded END copies. */
+inline void encode_end_frame(uint8_t et, uint8_t arq, uint8_t wait, uint8_t stat, uint8_t out[end_frame_total_bits]) {
+    EndFields f;
+    f.end_type = et;
+    f.arq = arq;
+    f.tx_wait = wait;
+    f.status = stat;
+    uint8_t end_v[end_bits], end_coded[end_fec_bits];
+    pack_end(f, end_v);
+    encode_end(end_v, end_coded);
+    u32_to_bits(fs3, out, 24);
+    for (size_t i = 0; i < end_fec_bits; i++)
+        out[24 + i] = end_coded[i];
+}
+
+/* CCH of a payload frame (9.1/9.2/9.3): FN + the ID slice for this frame
+ * number + M + V + F + RES + SLD, coded but NOT scrambled (the caller
+ * scrambles the voice CCH alone, or data CCH+TCH as one run). */
+inline void encode_payload_cch(const TxCall& c, uint8_t fn, uint32_t sld, uint8_t out[cch_fec_bits]) {
+    CchFields f;
+    f.frame_number = fn;
+    /* 9.1: FN 00/01 carry the called station ID's upper/lower 12 bits, FN
+     * 10/11 the own ID's. */
+    switch (fn & 3u) {
+        case 0:
+            f.id = (c.called_id >> 12) & 0xFFFu;
+            break;
+        case 1:
+            f.id = c.called_id & 0xFFFu;
+            break;
+        case 2:
+            f.id = (c.own_id >> 12) & 0xFFFu;
+            break;
+        default:
+            f.id = c.own_id & 0xFFFu;
+            break;
+    }
+    f.comm_mode = c.comm_mode;
+    f.version = c.version;
+    f.comm_format = c.comm_format;
+    f.sld = sld;
+    uint8_t cch_v[cch_bits];
+    pack_cch(f, cch_v);
+    encode_cch_coded(cch_v, out);
+}
+
+/* 24-bit frame prefix: FS2 on frames 0/2, colour code on frames 1/3 (9.1). */
+inline void put_frame_prefix(const TxCall& c, uint8_t fn, uint8_t out[24]) {
+    if (fn & 1u) {
+        uint8_t cc24[24];
+        channel_code_encode(c.cc12, cc24);
+        for (size_t i = 0; i < 24; i++)
+            out[i] = cc24[i];
+    } else {
+        u32_to_bits(fs2, out, 24);
+    }
+}
+
+/* Voice payload frame (9.1): FS2/CC + coded CCH (scrambled on its own) +
+ * four raw vocoder blocks, unscrambled. voc is 36 bytes = 288 bits, MSB of
+ * byte 0 first (xombe's 9-byte AMBE+2 frames x 4). */
+inline void encode_voice_frame(
+    const TxCall& c,
+    uint8_t fn,
+    const uint8_t voc[tch_frame_bits / 8],
+    uint8_t out[payload_frame_bits]) {
+    uint8_t prefix[24], cch_coded[cch_fec_bits];
+    put_frame_prefix(c, fn, prefix);
+    encode_payload_cch(c, fn, 0, cch_coded);
+    scramble(cch_coded, cch_fec_bits);
+
+    for (size_t i = 0; i < 24; i++)
+        out[i] = prefix[i];
+    for (size_t i = 0; i < cch_fec_bits; i++)
+        out[24 + i] = cch_coded[i];
+    uint8_t voc_bits[tch_frame_bits];
+    bytes_to_bits(voc, voc_bits, tch_frame_bits / 8);
+    for (size_t i = 0; i < tch_frame_bits; i++)
+        out[24 + cch_fec_bits + i] = voc_bits[i];
+}
+
+/* One coded type-2 data block (9.3): 40 data bits + null bit + CRC7 -> 48
+ * bits -> 6 x Hamming(12,8) -> 12x6 interleave. */
+inline void encode_t2_block(const uint8_t data5[5], uint8_t out[tch_block_bits]) {
+    uint8_t msg[48];
+    bytes_to_bits(data5, msg, 5);
+    msg[40] = 0;
+    const uint8_t crc = crc7(msg, 41);
+    for (size_t i = 0; i < 7; i++)
+        msg[41 + i] = (crc >> (6 - i)) & 1u;
+
+    uint8_t coded[48];
+    for (size_t b = 0; b < 6; b++)
+        hamming_encode_block(&msg[b * 8], &coded[b * 12]);
+    interleave(coded, out, 6);
+}
+
+/* Inverse of encode_t2_block. */
+inline DecodeResult decode_t2_block(const uint8_t in[tch_block_bits], uint8_t data5[5]) {
+    uint8_t work[tch_block_bits];
+    for (size_t i = 0; i < tch_block_bits; i++)
+        work[i] = in[i] & 1u;
+
+    uint8_t coded[tch_block_bits];
+    deinterleave(work, coded, 6);
+
+    DecodeResult res;
+    uint8_t msg[48];
+    for (size_t b = 0; b < 6; b++) {
+        const int r = hamming_decode_block(&coded[b * 12], &msg[b * 8]);
+        if (r > 0)
+            res.corrected++;
+        else if (r < 0)
+            res.failed_blocks++;
+    }
+
+    bits_to_bytes(msg, data5, 5);
+    uint8_t crc_rx = 0;
+    for (size_t i = 0; i < 7; i++)
+        crc_rx = static_cast<uint8_t>((crc_rx << 1) | (msg[41 + i] & 1u));
+    res.crc_ok = (crc7(msg, 41) == crc_rx);
+    return res;
+}
+
+/* Type 1 data payload frame (9.2): FS2/CC + CCH(M=010) + 288 raw user data
+ * bits, CCH and TCH scrambled together as one 360-bit run. payload is 36
+ * bytes = 288 bits. */
+inline void encode_data1_frame(
+    const TxCall& c,
+    uint8_t fn,
+    uint32_t sld,
+    const uint8_t payload[tch_frame_bits / 8],
+    uint8_t out[payload_frame_bits]) {
+    TxCall cd = c;
+    cd.comm_mode = 0x2; /* 010 */
+    uint8_t prefix[24], cch_coded[cch_fec_bits];
+    put_frame_prefix(cd, fn, prefix);
+    encode_payload_cch(cd, fn, sld, cch_coded);
+
+    for (size_t i = 0; i < 24; i++)
+        out[i] = prefix[i];
+    for (size_t i = 0; i < cch_fec_bits; i++)
+        out[24 + i] = cch_coded[i];
+    uint8_t data_bits[tch_frame_bits];
+    bytes_to_bits(payload, data_bits, tch_frame_bits / 8);
+    for (size_t i = 0; i < tch_frame_bits; i++)
+        out[24 + cch_fec_bits + i] = data_bits[i];
+    scramble(out + 24, cch_fec_bits + tch_frame_bits);
+}
+
+constexpr size_t t2_payload_bytes = tch_blocks_per_frame * 5; /* 20 per frame */
+
+/* Type 2 data payload frame (9.3): CCH(M=011) + 4 coded data blocks, all
+ * scrambled as one run. payload is 20 bytes = 4 x 40 bits. */
+inline void encode_data2_frame(
+    const TxCall& c,
+    uint8_t fn,
+    uint32_t sld,
+    const uint8_t payload[t2_payload_bytes],
+    uint8_t out[payload_frame_bits]) {
+    TxCall cd = c;
+    cd.comm_mode = 0x3; /* 011 */
+    uint8_t prefix[24], cch_coded[cch_fec_bits];
+    put_frame_prefix(cd, fn, prefix);
+    encode_payload_cch(cd, fn, sld, cch_coded);
+
+    for (size_t i = 0; i < 24; i++)
+        out[i] = prefix[i];
+    for (size_t i = 0; i < cch_fec_bits; i++)
+        out[24 + i] = cch_coded[i];
+    for (size_t k = 0; k < tch_blocks_per_frame; k++)
+        encode_t2_block(&payload[k * 5], out + 24 + cch_fec_bits + k * tch_block_bits);
+    scramble(out + 24, cch_fec_bits + tch_frame_bits);
+}
+
+/* Combined decode of a data payload frame's CCH+TCH (9.2/9.3). type2 selects
+ * the TCH coding; payload receives 36 bytes (type 1) or 20 bytes plus zero
+ * padding (type 2). Returns the CCH result; block corrections of type 2
+ * blocks are folded in. */
+inline DecodeResult decode_data_frame(
+    const uint8_t cch_coded[cch_fec_bits],
+    const uint8_t tch_coded[tch_frame_bits],
+    bool type2,
+    uint8_t cch[cch_bits],
+    uint8_t payload[tch_frame_bits / 8]) {
+    uint8_t work[cch_fec_bits + tch_frame_bits];
+    for (size_t i = 0; i < cch_fec_bits; i++)
+        work[i] = cch_coded[i] & 1u;
+    for (size_t i = 0; i < tch_frame_bits; i++)
+        work[cch_fec_bits + i] = tch_coded[i] & 1u;
+    scramble(work, cch_fec_bits + tch_frame_bits);
+
+    DecodeResult res = decode_cch_coded(work, cch);
+    if (!res.crc_ok)
+        return res;
+
+    if (type2) {
+        for (size_t i = t2_payload_bytes; i < tch_frame_bits / 8; i++)
+            payload[i] = 0;
+        for (size_t k = 0; k < tch_blocks_per_frame; k++) {
+            const DecodeResult b = decode_t2_block(&work[cch_fec_bits + k * tch_block_bits], &payload[k * 5]);
+            res.corrected += b.corrected;
+            res.failed_blocks += b.failed_blocks;
+            if (!b.crc_ok)
+                res.crc_ok = false;
+        }
+    } else {
+        bits_to_bytes(&work[cch_fec_bits], payload, tch_frame_bits / 8);
+    }
+    return res;
 }
 
 } /* namespace dpmr */

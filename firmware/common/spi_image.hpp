@@ -142,6 +142,8 @@ constexpr image_tag_t image_tag_wmbus_rx{'P', 'W', 'M', 'B'};
 constexpr image_tag_t image_tag_vdl2_rx{'P', 'V', 'D', 'L'};
 constexpr image_tag_t image_tag_subghz_chat{'P', 'C', 'H', 'T'};
 constexpr image_tag_t image_tag_dpmr{'P', 'D', 'P', 'R'};
+constexpr image_tag_t image_tag_dpmr_voice{'P', 'D', 'M', 'V'};
+constexpr image_tag_t image_tag_dpmr_tx{'P', 'D', 'M', 'T'};
 
 constexpr image_tag_t image_tag_noop{'P', 'N', 'O', 'P'};
 

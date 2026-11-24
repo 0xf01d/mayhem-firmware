@@ -395,9 +395,13 @@ set(EXTCPPSRC
 	external/tetra_rx/tetra_rcpc.cpp
 	external/tetra_rx/tetra_viterbi.cpp
 
-	#pmr446 rx
+	#pmr446 analog
 	external/pmr446/main.cpp
 	external/pmr446/ui_pmr446.cpp
+
+	#dpmr446 digital
+	external/dpmr446/main.cpp
+	external/dpmr446/ui_dpmr446.cpp
 
 	#adsb rx
 	external/adsbrx/main.cpp
@@ -542,6 +546,7 @@ set(EXTAPPLIST
     signal_hunter
 	tetra_rx
 	pmr446
+	dpmr446
 	adsbrx
 	ais_rx
 	aprs_rx

@@ -66,6 +66,10 @@ struct SharedMemory {
 
     char m4_panic_msg[32]{0};
 
+    /* Set by the app before baseband::run_image() so the combined dPMR446
+     * image knows which direction to start in; see dpmr446_mode.hpp. */
+    uint8_t dpmr446_mode{0};
+
     union {
         ToneData tones_data;
         struct {

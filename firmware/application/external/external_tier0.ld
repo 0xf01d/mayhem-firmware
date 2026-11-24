@@ -126,6 +126,7 @@ MEMORY
     ram_external_app_subghz_chat           (rwx) : org = 0xAE150000, len = 32k
     ram_external_app_vdl2_rx               (rwx) : org = 0xAE160000, len = 32k
     ram_external_app_pmr446                (rwx) : org = 0xAE170000, len = 32k
+    ram_external_app_dpmr446               (rwx) : org = 0xAE180000, len = 32k
 }
 
 SECTIONS
@@ -747,4 +748,10 @@ SECTIONS
         KEEP(*(.external_app.app_pmr446.application_information));
         */external/pmr446/*(*ui*external_app*pmr446*);
     } > ram_external_app_pmr446
+
+    .external_app_dpmr446 : ALIGN(4) SUBALIGN(4)
+    {
+        KEEP(*(.external_app.app_dpmr446.application_information));
+        */external/dpmr446/*(*ui*external_app*dpmr446*);
+    } > ram_external_app_dpmr446
 }
