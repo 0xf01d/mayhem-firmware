@@ -31,6 +31,7 @@
 #include "portapack_persistent_memory.hpp"
 
 #include "core_control.hpp"
+#include "file.hpp"
 
 /* Set true to enable check for baseband messages getting stuck.
  * This implies the baseband thread is not dequeuing and has probably stalled.
@@ -531,6 +532,82 @@ bool run_image_at_local_sram(const spi_flash::image_tag_t image_tag, bool enforc
 
 bool is_image_running() {
     return baseband_image_running;
+}
+
+/* Load a baseband image from a file into Local SRAM Bank 1.
+ *
+ * These images are linked against Local SRAM Bank 1 (90112 B) and cannot be
+ * carried inside the application: the two voice directions are 56580 and 80548
+ * B raw, 46949 and 42918 B compressed, against 13844 B of free SPI flash on a
+ * full build. So they travel as files and the app loads one when it needs it.
+ *
+ * The file is the object's .bin, decompressed: objcopy output, laid out for the
+ * bank by LPC43xx_M4_sram1.ld / LPC43xx_M4_combined.ld. Refusing to run an image
+ * we could not read or that does not fit is the point: the caller keys a
+ * transmitter on the strength of this returning true.
+ */
+bool run_image_from_file(const char16_t* const filename, bool enforce_core_sync) {
+    if (baseband_image_running)
+        chDbgPanic("BBRunning");
+
+    if (filename == nullptr)
+        return false;
+
+    /* file.hpp's path is a u16 string: build it from the pointer's range rather
+     * than letting the template constructor guess. */
+    const char16_t* end = filename;
+    while (*end)
+        ++end;
+    const std::filesystem::path path{filename, end};
+
+    File file;
+    if (file.open(path)) {
+        return false;
+    }
+
+    const auto size = file.size();
+    const auto capacity = memory::map::m4_code_hackrf.size();
+    if (size == 0 || size > capacity) {
+        return false;
+    }
+
+    creg::m4txevent::clear();
+    shared_memory.clear_baseband_ready();
+    rx_fs4_supported = false;
+
+    auto* const destination = reinterpret_cast<uint8_t*>(
+        memory::map::m4_code_hackrf.base());
+
+    /* A partial image is not usable and is not safe to leave behind: the bank
+     * would hold a mix of this image and hackrf.img, and the next thing to
+     * reset the core would run it. Put the bundled image back on any failure. */
+    size_t read_total = 0;
+    while (read_total < size) {
+        const auto result = file.read(destination + read_total, size - read_total);
+        if (!result || result.value() == 0) {
+            file.close();
+            m4_restore_bundled();
+            return false;
+        }
+        read_total += result.value();
+    }
+    file.close();
+
+    m4_init_prepared(memory::map::m4_code_hackrf.base(), false);
+    baseband_image_running = true;
+
+    creg::m4txevent::enable();
+
+    if (enforce_core_sync) {
+        auto count = 3'000u;
+        while (!shared_memory.baseband_ready && --count)
+            chThdSleepMilliseconds(1);
+
+        if (count == 0)
+            chDbgPanic("Baseband Sync Fail");
+    }
+
+    return true;
 }
 
 void run_image(const spi_flash::image_tag_t image_tag, bool enforce_core_sync) {

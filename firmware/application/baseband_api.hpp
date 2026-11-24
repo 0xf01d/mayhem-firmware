@@ -147,6 +147,13 @@ void run_image(const portapack::spi_flash::image_tag_t image_tag, bool enforce_c
  * LPC43xx_M4_sram1.ld or LPC43xx_M4_combined.ld are built for this.
  */
 bool run_image_at_local_sram(const portapack::spi_flash::image_tag_t image_tag, bool enforce_core_sync = true);
+
+/* Load such an image from a file into the same bank. The voice images are
+ * 42-47 KiB compressed and do not fit in SPI flash, so they ship as files.
+ * Returns false if the file cannot be opened, is empty, is larger than the
+ * bank, or cannot be fully read; the caller must not enable a transmitter it
+ * could not back with an image. */
+bool run_image_from_file(const char16_t* const filename, bool enforce_core_sync = true);
 void shutdown();
 
 void spectrum_streaming_start();

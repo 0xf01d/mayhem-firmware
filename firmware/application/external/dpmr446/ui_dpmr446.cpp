@@ -21,6 +21,12 @@
 
 #include "ui_dpmr446.hpp"
 
+/* The voice images are 42-47 KiB compressed and SPI flash has 13.8 KiB free on a
+ * full build, so they ship next to the app on the SD card instead of inside the
+ * firmware. See baseband::run_image_from_file(). */
+constexpr const char16_t voice_image_path[] = u"/APPS/dpmr446/PDMV.bin";
+constexpr const char16_t tx_image_path[] = u"/APPS/dpmr446/PDMT.bin";
+
 #include "audio.hpp"
 #include "baseband_api.hpp"
 #include "string_format.hpp"
@@ -79,7 +85,7 @@ DPMR446View::DPMR446View(NavigationView& nav)
     options_channel.set_by_value(channel_);
     set_channel_frequency();
 
-    if (direction_ > 1)
+    if (direction_ > 2)
         direction_ = 0;
     options_direction.set_by_value(direction_);
     options_direction.on_change = [this](size_t, int32_t value) {
@@ -87,10 +93,24 @@ DPMR446View::DPMR446View(NavigationView& nav)
         apply_mode();
     };
 
+    button_ptt.on_select = [this](Button&) {
+        if (transmitting_ || stopping_)
+            request_stop_tx();
+        else if (direction_ == 2)
+            start_tx();
+    };
+
+    signal_token_tick_second = rtc_time::signal_tick_second += [this]() {
+        on_tick_second();
+    };
+
     apply_mode();
 }
 
 DPMR446View::~DPMR446View() {
+    rtc_time::signal_tick_second -= signal_token_tick_second;
+    transmitting_ = false;
+    stopping_ = false;
     transmitter_model.disable();
     receiver_model.disable();
     baseband::shutdown();
@@ -124,9 +144,9 @@ void DPMR446View::apply_mode() {
     text_info.set("-");
     console.clear(true);
 
-    if (direction_ == 1) {
-        /* Voice TX: the image is already loaded and waits for PTT, so nothing
-         * runs until then. */
+    if (direction_ == 2) {
+        /* TX: nothing runs until PTT. The image is loaded by start_tx(), which
+         * is the only place that knows the microphone is about to be read. */
         text_info.set("TX ch" + to_string_dec_uint(channel_) + " PTT");
         return;
     }
@@ -138,12 +158,20 @@ void DPMR446View::apply_mode() {
 
     if (direction_ == 0) {
         /* Voice RX: 4FSK demodulator, AMBE+2 decoder, audio out. */
-        baseband::run_image_at_local_sram(portapack::spi_flash::image_tag_dpmr_voice);
+        if (!baseband::run_image_from_file(voice_image_path)) {
+            /* Say so rather than pretend the receiver is running when
+             * hackrf.img is what got loaded. */
+            text_info.set("RX voice image missing");
+            return;
+        }
         audio::set_rate(audio::Rate::Hz_24000);
         audio::output::start();
         text_info.set("RX voice ch" + to_string_dec_uint(channel_));
     } else {
-        /* Signalling monitor: layer-2 frames on the console. */
+        /* Signalling monitor: layer-2 frames on the console. Bank 2 holds the
+         * app's own M0 code, so a voice image may have overwritten it: reload
+         * the bundled baseband first, which is what run_image() does when the
+         * chunk is not in the internal set. */
         baseband::run_image(portapack::spi_flash::image_tag_dpmr);
         text_info.set("RX monitor ch" + to_string_dec_uint(channel_));
     }
@@ -152,7 +180,7 @@ void DPMR446View::apply_mode() {
 }
 
 void DPMR446View::start_tx() {
-    if (direction_ != 1 || transmitting_)
+    if (direction_ != 2 || transmitting_ || stopping_)
         return;
 
     /* The transmit image has to be running before the model is enabled: it
@@ -161,7 +189,21 @@ void DPMR446View::start_tx() {
     receiver_model.disable();
     baseband::shutdown();
 
-    baseband::run_image_at_local_sram(portapack::spi_flash::image_tag_dpmr_tx);
+    if (!baseband::run_image_from_file(tx_image_path)) {
+        /* Refuse to key the radio with no baseband behind it: enabling the
+         * transmitter here would put whatever the M0 last wrote to the DMA
+         * descriptors on air. */
+        text_info.set("TX image missing");
+        return;
+    }
+
+    /* The image waits for this before it modulates anything; without it
+     * DPMRTxProcessor::configured stays false. */
+    /* Voice mode, everything else left at the defaults the message already
+     * carries (mic_shift 4, mic_gain_q8 256, one header/end pair). */
+    DPMRTxConfigureMessage configure;
+    configure.mode = DPMRTxConfigureMessage::VOICE;
+    shared_memory.application_queue.push(configure);
 
     transmitter_model.set_target_frequency(::dpmr446::channel_frequency_hz(channel_));
     transmitter_model.set_sampling_rate(1536000);
@@ -169,22 +211,47 @@ void DPMR446View::start_tx() {
     transmitter_model.enable();
 
     transmitting_ = true;
+    stopping_ = false;
     text_info.set("TX ch" + to_string_dec_uint(channel_));
 }
 
-void DPMR446View::stop_tx() {
-    if (!transmitting_)
+void DPMR446View::request_stop_tx() {
+    if (!transmitting_ || stopping_)
         return;
 
-    /* Ask the image to finish the call (end frame, then silence) before the
-     * model tears the radio down. */
+    /* Release the PTT: the image finishes the superframe in progress, sends its
+     * End frame, and reports done. Tearing the radio down here would drop the
+     * carrier mid-superframe and the call would end without an End. */
     const RequestSignalMessage signal{RequestSignalMessage::Signal::DPMRTxRelease};
     shared_memory.application_queue.push(signal);
 
+    stopping_ = true;
+    stop_ticks_ = 0;
+    text_info.set("TX ch" + to_string_dec_uint(channel_) + " end...");
+}
+
+void DPMR446View::finish_stop_tx() {
     transmitter_model.disable();
     baseband::shutdown();
     transmitting_ = false;
+    stopping_ = false;
     text_info.set("TX ch" + to_string_dec_uint(channel_) + " PTT");
+}
+
+void DPMR446View::on_tx_progress(const bool done) {
+    if (done && stopping_)
+        finish_stop_tx();
+}
+
+void DPMR446View::on_tick_second() {
+    if (!stopping_)
+        return;
+
+    /* The image was asked to send its End frame and has not reported done.
+     * Release the radio anyway rather than leave it keyed: a truncated call is
+     * better than a stuck carrier. */
+    if (++stop_ticks_ >= stop_timeout_s)
+        finish_stop_tx();
 }
 
 void DPMR446View::on_frame(const DPMRFrameMessage& message) {

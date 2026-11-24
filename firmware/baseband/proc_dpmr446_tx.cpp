@@ -98,7 +98,12 @@ void DPMRTxProcessor::start_tx(const DPMRTxConfigureMessage& c) {
     cfg.repeat = c.repeat;
     cfg.mic_shift = c.mic_shift;
     cfg.mic_gain_q8 = c.mic_gain_q8;
-    cfg.payload_len = c.payload_len;
+    /* bb_data.data is 512 B and this is the index bound for the data modes.
+     * payload_len is uint8_t so it cannot exceed 255, but the check belongs
+     * where the value enters rather than in the loop that trusts it. */
+    cfg.payload_len = (c.payload_len > sizeof(shared_memory.bb_data.data))
+                          ? sizeof(shared_memory.bb_data.data)
+                          : c.payload_len;
     cfg.sld = c.sld;
     call.cc12 = c.cc12;
     call.called_id = c.called_id;
@@ -226,7 +231,16 @@ void DPMRTxProcessor::prepare_next_block() {
             frame_number = 0;
             payload_bytes_sent = 0;
             phase = TxPhase::Payload;
-            prepare_payload_frame();
+            /* A first payload frame can decline: empty data, or PTT released
+             * before frame 0. Treat it exactly as the Payload case does, or the
+             * phase machine sits in Payload with nothing to send and execute()
+             * modulates the last level until the radio is torn down. */
+            if (!prepare_payload_frame()) {
+                phase = TxPhase::End;
+                encode_end_frame(cfg.end_type, cfg.arq, cfg.tx_wait, cfg.status, frame_bits);
+                bits_total = end_frame_total_bits;
+                bits_sent = 0;
+            }
             break;
 
         case TxPhase::Payload:

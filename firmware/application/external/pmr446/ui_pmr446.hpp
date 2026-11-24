@@ -123,7 +123,10 @@ class PMR446View : public View {
     OptionsField options_polite{
         {UI_POS_X(21), UI_POS_Y(1)},
         7,
-        {{"POLITE", 0}, {"IMPOL", 1}}};
+        /* The values are the polite_ flag, not a menu index: 1 listens first.
+         * These were reversed, so the field read IMPOL while behaving politely
+         * and selecting POLITE armed the transmitter with no listen at all. */
+        {{"POLITE", 1}, {"IMPOL", 0}}};
 
     Text text_status{
         {UI_POS_X(0), UI_POS_Y(2), UI_POS_MAXWIDTH, 16},

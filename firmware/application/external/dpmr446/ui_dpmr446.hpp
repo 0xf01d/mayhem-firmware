@@ -69,8 +69,18 @@ class DPMR446View : public View {
     NavigationView& nav_;
 
     uint32_t channel_{1};
-    uint32_t direction_{0}; /* 0 RX voice, 1 TX voice, 2 signalling monitor */
+    uint32_t direction_{0}; /* 0 RX voice, 1 signalling monitor, 2 TX voice */
     bool transmitting_{false};
+    bool stopping_{false};   /* PTT released, waiting for the image's End frame */
+    uint8_t stop_ticks_{0};  /* seconds waited for done, bounded by stop_timeout_s */
+
+    /* A superframe is 80 ms and the End frame 40 ms, so the handshake normally
+     * takes about a tenth of a second. If the image is wedged and never reports
+     * done, the radio must still be released: half a second is four times the
+     * worst honest case and short enough not to be noticed. */
+    static constexpr uint8_t stop_timeout_s = 1;
+
+    SignalToken signal_token_tick_second;
 
     app_settings::SettingsManager settings_{
         "dpmr446",
@@ -104,10 +114,16 @@ class DPMR446View : public View {
         3,
         {}};
 
+    /* Three modes, one field: two entries would not fit the label column and a
+     * separate switch for TX would make the PTT button's state ambiguous. */
     OptionsField options_direction{
         {UI_POS_X(13), UI_POS_Y(0)},
-        2,
-        {{"Rx", 0}, {"Tx", 1}}};
+        3,
+        {{"Rx", 0}, {"Mon", 1}, {"Tx", 2}}};
+
+    Button button_ptt{
+        {UI_POS_X(20), UI_POS_Y(0), UI_POS_WIDTH(6), UI_POS_HEIGHT(1)},
+        "PTT"};
 
     Text text_code{
         {UI_POS_X(14), UI_POS_Y(1), UI_POS_WIDTH_REMAINING(14), 16},
@@ -129,9 +145,11 @@ class DPMR446View : public View {
     void rebuild_channel_options();
     void set_channel_frequency();
     void apply_mode();
-    void apply_direction();
     void start_tx();
-    void stop_tx();
+    void request_stop_tx();
+    void finish_stop_tx();
+    void on_tx_progress(bool done);
+    void on_tick_second();
 
     void on_frame(const DPMRFrameMessage& message);
     void on_tch(const DPMRTchDataMessage& message);
