@@ -493,6 +493,42 @@ void set_rx_fs4_direction(RxFs4Direction direction) {
     }
 }
 
+bool run_image_at_local_sram(const spi_flash::image_tag_t image_tag, bool enforce_core_sync) {
+    if (baseband_image_running)
+        chDbgPanic("BBRunning");
+
+    creg::m4txevent::clear();
+    shared_memory.clear_baseband_ready();
+
+    /* No audio or capture image runs this way: those are the rx_fs4_supported
+     * set, and an image that expected the stock decimators from a Bank 2 build
+     * is not what gets loaded here. */
+    rx_fs4_supported = false;
+
+    /* Bank 1 holds hackrf.img, reloaded from flash at boot and not needed once
+     * an app has taken over, so it is free by the time this is called. */
+    if (!m4_init(image_tag, memory::map::m4_code_hackrf, false)) {
+        /* Nothing to load: put hackrf.img back and report failure. */
+        m4_restore_bundled();
+        m4_init_prepared(portapack::memory::map::m4_code_hackrf.base(), false);
+        return false;
+    }
+    baseband_image_running = true;
+
+    creg::m4txevent::enable();
+
+    if (enforce_core_sync) {
+        auto count = 3'000u;
+        while (!shared_memory.baseband_ready && --count)
+            chThdSleepMilliseconds(1);
+
+        if (count == 0)
+            chDbgPanic("Baseband Sync Fail");
+    }
+
+    return true;
+}
+
 bool is_image_running() {
     return baseband_image_running;
 }

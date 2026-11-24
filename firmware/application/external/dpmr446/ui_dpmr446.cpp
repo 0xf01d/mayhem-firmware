@@ -58,6 +58,7 @@ DPMR446View::DPMR446View(NavigationView& nav)
         &field_vga,
         &field_volume,
         &field_frequency,
+        &options_direction,
         &labels,
         &options_channel,
         &text_code,
@@ -78,12 +79,22 @@ DPMR446View::DPMR446View(NavigationView& nav)
     options_channel.set_by_value(channel_);
     set_channel_frequency();
 
+    if (direction_ > 1)
+        direction_ = 0;
+    options_direction.set_by_value(direction_);
+    options_direction.on_change = [this](size_t, int32_t value) {
+        direction_ = static_cast<uint32_t>(value);
+        apply_mode();
+    };
+
     apply_mode();
 }
 
 DPMR446View::~DPMR446View() {
+    transmitter_model.disable();
     receiver_model.disable();
     baseband::shutdown();
+    audio::input::stop();
     audio::output::stop();
 }
 
@@ -101,22 +112,79 @@ void DPMR446View::set_channel_frequency() {
 
 void DPMR446View::apply_mode() {
     audio::output::stop();
+    audio::input::stop();
     receiver_model.disable();
+    transmitter_model.disable();
+    transmitting_ = false;
     baseband::shutdown();
-
-    /* Signalling/data receiver (phase 1): layer-2 frames on the console. */
-    baseband::run_image(portapack::spi_flash::image_tag_dpmr);
-    receiver_model.set_modulation(ReceiverModel::Mode::NarrowbandFMAudio);
-    receiver_model.set_squelch_level(0);
-    receiver_model.set_sampling_rate(3072000);
-    receiver_model.set_baseband_bandwidth(1750000);
-    receiver_model.enable();
 
     text_code.set("-");
     text_ids.set("-");
     text_frame.set("-");
     text_info.set("-");
     console.clear(true);
+
+    if (direction_ == 1) {
+        /* Voice TX: the image is already loaded and waits for PTT, so nothing
+         * runs until then. */
+        text_info.set("TX ch" + to_string_dec_uint(channel_) + " PTT");
+        return;
+    }
+
+    receiver_model.set_modulation(ReceiverModel::Mode::NarrowbandFMAudio);
+    receiver_model.set_squelch_level(0);
+    receiver_model.set_sampling_rate(3072000);
+    receiver_model.set_baseband_bandwidth(1750000);
+
+    if (direction_ == 0) {
+        /* Voice RX: 4FSK demodulator, AMBE+2 decoder, audio out. */
+        baseband::run_image_at_local_sram(portapack::spi_flash::image_tag_dpmr_voice);
+        audio::set_rate(audio::Rate::Hz_24000);
+        audio::output::start();
+        text_info.set("RX voice ch" + to_string_dec_uint(channel_));
+    } else {
+        /* Signalling monitor: layer-2 frames on the console. */
+        baseband::run_image(portapack::spi_flash::image_tag_dpmr);
+        text_info.set("RX monitor ch" + to_string_dec_uint(channel_));
+    }
+
+    receiver_model.enable();
+}
+
+void DPMR446View::start_tx() {
+    if (direction_ != 1 || transmitting_)
+        return;
+
+    /* The transmit image has to be running before the model is enabled: it
+     * owns the DMA and reads the microphone as soon as the thread starts. */
+    audio::output::stop();
+    receiver_model.disable();
+    baseband::shutdown();
+
+    baseband::run_image_at_local_sram(portapack::spi_flash::image_tag_dpmr_tx);
+
+    transmitter_model.set_target_frequency(::dpmr446::channel_frequency_hz(channel_));
+    transmitter_model.set_sampling_rate(1536000);
+    transmitter_model.set_baseband_bandwidth(1750000);
+    transmitter_model.enable();
+
+    transmitting_ = true;
+    text_info.set("TX ch" + to_string_dec_uint(channel_));
+}
+
+void DPMR446View::stop_tx() {
+    if (!transmitting_)
+        return;
+
+    /* Ask the image to finish the call (end frame, then silence) before the
+     * model tears the radio down. */
+    const RequestSignalMessage signal{RequestSignalMessage::Signal::DPMRTxRelease};
+    shared_memory.application_queue.push(signal);
+
+    transmitter_model.disable();
+    baseband::shutdown();
+    transmitting_ = false;
+    text_info.set("TX ch" + to_string_dec_uint(channel_) + " PTT");
 }
 
 void DPMR446View::on_frame(const DPMRFrameMessage& message) {

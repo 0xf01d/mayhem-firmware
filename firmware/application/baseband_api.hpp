@@ -136,6 +136,17 @@ bool is_image_running();
 bool supports_rx_fs4();
 void set_rx_fs4_direction(RxFs4Direction direction);
 void run_image(const portapack::spi_flash::image_tag_t image_tag, bool enforce_core_sync = true);
+
+/* Load a baseband image into Local SRAM Bank 1 (memory::map::m4_code_hackrf)
+ * instead of Bank 2 (memory::map::m4_code) and point the core at it.
+ *
+ * Bank 2 is 32 KiB and shared with an external app's own M0 code, which is why
+ * "run_image" caps a baseband image there. Bank 1 is 90 KiB and used by the
+ * bundled hackrf.img, which has been reloaded from flash at boot and is no
+ * longer needed once an app is running. Images linked with
+ * LPC43xx_M4_sram1.ld or LPC43xx_M4_combined.ld are built for this.
+ */
+bool run_image_at_local_sram(const portapack::spi_flash::image_tag_t image_tag, bool enforce_core_sync = true);
 void shutdown();
 
 void spectrum_streaming_start();

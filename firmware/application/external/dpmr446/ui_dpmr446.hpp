@@ -29,9 +29,17 @@
  * image's size. This app runs the signalling/data receiver (image_tag_dpmr):
  * layer-2 header, CCH and end frames on the console.
  *
- * Voice RX and TX need the AMBE+2 vocoder images. Those do not currently fit
- * the 32752 B baseband cap (see the lane report); this app only bundles the
- * signalling image, so it is always safe. */
+ * The direction selector picks which baseband image runs:
+ *   RX  the voice receiver (image_tag_dpmr_voice), AMBE+2 to the speaker;
+ *   TX  the transmitter (image_tag_dpmr_tx), armed by the PTT button.
+ * Both are linked into Local SRAM Bank 1 (see LPC43xx_M4_sram1.ld), not into
+ * the 32752 B Bank 2 the signalling image uses, so the app has to load them
+ * itself: run_image_at_local_sram() in dpmr446_image.cpp does that. The
+ * signalling receiver (image_tag_dpmr) is still here as a third mode for
+ * watching layer 2 on the console.
+ *
+ * Boards that link the combined image (DPMR446_COMBINED_IMAGE) run one image
+ * for both directions and pass the direction in shared memory instead. */
 
 #include "app_settings.hpp"
 #include "dpmr446_channels.hpp"
@@ -61,12 +69,15 @@ class DPMR446View : public View {
     NavigationView& nav_;
 
     uint32_t channel_{1};
+    uint32_t direction_{0}; /* 0 RX voice, 1 TX voice, 2 signalling monitor */
+    bool transmitting_{false};
 
     app_settings::SettingsManager settings_{
         "dpmr446",
         app_settings::Mode::RX,
         {
             {"channel"sv, &channel_},
+            {"direction"sv, &direction_},
         }};
 
     RxRadioState radio_state_{};
@@ -93,6 +104,11 @@ class DPMR446View : public View {
         3,
         {}};
 
+    OptionsField options_direction{
+        {UI_POS_X(13), UI_POS_Y(0)},
+        2,
+        {{"Rx", 0}, {"Tx", 1}}};
+
     Text text_code{
         {UI_POS_X(14), UI_POS_Y(1), UI_POS_WIDTH_REMAINING(14), 16},
         "-"};
@@ -113,6 +129,9 @@ class DPMR446View : public View {
     void rebuild_channel_options();
     void set_channel_frequency();
     void apply_mode();
+    void apply_direction();
+    void start_tx();
+    void stop_tx();
 
     void on_frame(const DPMRFrameMessage& message);
     void on_tch(const DPMRTchDataMessage& message);
